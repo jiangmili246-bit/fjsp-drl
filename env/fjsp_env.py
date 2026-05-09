@@ -31,6 +31,8 @@ class EnvState:
     arrival_type_batch: torch.Tensor = None
     priority_weight_batch: torch.Tensor = None
     mask_job_inactive_batch: torch.Tensor = None
+    feat_job_batch: torch.Tensor = None
+    feat_job_norm_batch: torch.Tensor = None
 
     # dynamic
     batch_idxes: torch.Tensor = None
@@ -152,19 +154,9 @@ class FJSPEnv(gym.Env):
                 Available time
                 Utilization
         '''
-        # Generate raw feature vectors
-        feat_opes_batch = torch.zeros(size=(self.batch_size, self.paras["ope_feat_dim"], self.num_opes))
-        feat_mas_batch = torch.zeros(size=(self.batch_size, self.paras["ma_feat_dim"], num_mas))
-
-        feat_opes_batch[:, 1, :] = torch.count_nonzero(self.ope_ma_adj_batch, dim=2)
-        feat_opes_batch[:, 2, :] = torch.sum(self.proc_times_batch, dim=2).div(feat_opes_batch[:, 1, :] + 1e-9)
-        feat_opes_batch[:, 3, :] = convert_feat_job_2_ope(self.nums_ope_batch, self.opes_appertain_batch)
-        feat_opes_batch[:, 5, :] = torch.bmm(feat_opes_batch[:, 2, :].unsqueeze(1),
-                                             self.cal_cumul_adj_batch).squeeze()
-        end_time_batch = (feat_opes_batch[:, 5, :] +
-                          feat_opes_batch[:, 2, :]).gather(1, self.end_ope_biases_batch)
-        feat_opes_batch[:, 4, :] = convert_feat_job_2_ope(end_time_batch, self.opes_appertain_batch)
-        feat_mas_batch[:, 0, :] = torch.count_nonzero(self.ope_ma_adj_batch, dim=1)
+        # Generate raw feature vectors (Phase-4): ope[3], ma[4], job[8]
+        feat_opes_batch = torch.zeros(size=(self.batch_size, 3, self.num_opes))
+        feat_mas_batch = torch.zeros(size=(self.batch_size, 4, num_mas))
         self.feat_opes_batch = feat_opes_batch
         self.feat_mas_batch = feat_mas_batch
 
@@ -220,6 +212,10 @@ class FJSPEnv(gym.Env):
         self.due_date_batch = torch.stack(self.due_date_batch, dim=0)
         self.arrival_type_batch = torch.stack(self.arrival_type_batch, dim=0)
         self.priority_weight_batch = torch.stack(self.priority_weight_batch, dim=0)
+        self.feat_job_batch = torch.zeros(size=(self.batch_size, 8, self.num_jobs))
+        self.feat_job_norm_batch = torch.zeros(size=(self.batch_size, 8, self.num_jobs))
+        self.feat_opes_norm_batch = torch.zeros(size=(self.batch_size, 3, self.num_opes))
+        self.feat_mas_norm_batch = torch.zeros(size=(self.batch_size, 4, self.num_mas))
 
         self.state = EnvState(batch_idxes=self.batch_idxes,
                               feat_opes_batch=self.feat_opes_batch, feat_mas_batch=self.feat_mas_batch,
@@ -237,7 +233,9 @@ class FJSPEnv(gym.Env):
                               due_date_batch=self.due_date_batch,
                               arrival_type_batch=self.arrival_type_batch,
                               priority_weight_batch=self.priority_weight_batch,
-                              mask_job_inactive_batch=self.mask_job_inactive_batch)
+                              mask_job_inactive_batch=self.mask_job_inactive_batch,
+                              feat_job_batch=self.feat_job_batch,
+                              feat_job_norm_batch=self.feat_job_norm_batch)
 
         # initialize active/inactive jobs according to release_time and arrival type
         self.dynamic_stats = {
@@ -245,6 +243,7 @@ class FJSPEnv(gym.Env):
             "active_ope_count": torch.zeros(self.batch_size, dtype=torch.long),
         }
         self._init_dynamic_job_activation()
+        self._update_node_features()
 
         # Save initial data for reset
         self.old_proc_times_batch = copy.deepcopy(self.proc_times_batch)
@@ -299,6 +298,7 @@ class FJSPEnv(gym.Env):
             # initialize newly active jobs' frontier as first operation
             start_ope = self.num_ope_biases_batch[j_new]
             self.ope_step_batch[j_new] = start_ope
+            self._update_job_features()
 
         self._refresh_dynamic_counts()
         self._sanity_check_dynamic_arrivals(prev_job_count, prev_ope_count, prev_machine_at, prev_num_mas)
@@ -315,6 +315,60 @@ class FJSPEnv(gym.Env):
         reg_w = self.priority_weight_batch[(self.arrival_type_batch == 0) | (self.arrival_type_batch == 1)]
         if urg_w.numel() > 0 and reg_w.numel() > 0:
             assert torch.min(urg_w) > torch.max(reg_w), "urgent priority weight must be higher than regular jobs"
+
+    def _normalize_last_dim(self, x):
+        mean = x.mean(dim=-1, keepdim=True)
+        std = x.std(dim=-1, keepdim=True)
+        return (x - mean) / (std + 1e-5)
+
+    def _update_job_features(self):
+        n_i = self.nums_ope_batch.float()
+        l_i = (self.end_ope_biases_batch + 1 - self.ope_step_batch).clamp(min=0).float()
+        st_i = torch.zeros_like(n_i)
+        erpt_i = torch.zeros_like(n_i)
+        for b in range(self.batch_size):
+            for j in range(self.num_jobs):
+                s = int(self.num_ope_biases_batch[b, j].item())
+                e = int(self.end_ope_biases_batch[b, j].item()) + 1
+                st_i[b, j] = self.feat_opes_batch[b, 1, s:e].min() if e > s else 0.0
+                erpt_i[b, j] = self.feat_opes_batch[b, 2, s:e].sum() if e > s else 0.0
+        self.feat_job_batch[:, 0, :] = n_i
+        self.feat_job_batch[:, 1, :] = l_i
+        self.feat_job_batch[:, 2, :] = st_i
+        self.feat_job_batch[:, 3, :] = erpt_i
+        self.feat_job_batch[:, 4, :] = self.release_time_batch
+        self.feat_job_batch[:, 5, :] = self.due_date_batch
+        self.feat_job_batch[:, 6, :] = self.arrival_type_batch.float()
+        self.feat_job_batch[:, 7, :] = self.priority_weight_batch
+        self.feat_job_norm_batch = self._normalize_last_dim(self.feat_job_batch)
+
+    def _update_operation_features(self):
+        # [|K_ij|, EST_ij_t, EPT_ij] ; no DD_i/w_i/c_i copied here
+        k_ij = torch.count_nonzero(self.ope_ma_adj_batch, dim=2).float()
+        est = self.schedules_batch[:, :, 2]
+        ept = torch.sum(self.proc_times_batch, dim=2).div(k_ij + 1e-9)
+        self.feat_opes_batch[:, 0, :] = k_ij
+        self.feat_opes_batch[:, 1, :] = est
+        self.feat_opes_batch[:, 2, :] = ept
+        self.feat_opes_norm_batch = self._normalize_last_dim(self.feat_opes_batch)
+
+    def _update_machine_features(self):
+        at = self.machines_batch[:, :, 1]
+        utiliz = self.machines_batch[:, :, 2]
+        cur_time = self.time[:, None].expand_as(utiliz)
+        ur = torch.minimum(utiliz, cur_time).div(self.time[:, None] + 1e-9)
+        n_k = torch.count_nonzero(self.ope_ma_adj_batch, dim=1).float()
+        apt = torch.sum(self.proc_times_batch, dim=1).div(n_k + 1e-9)
+        self.feat_mas_batch[:, 0, :] = at
+        self.feat_mas_batch[:, 1, :] = ur
+        self.feat_mas_batch[:, 2, :] = n_k
+        self.feat_mas_batch[:, 3, :] = apt
+        self.feat_mas_norm_batch = self._normalize_last_dim(self.feat_mas_batch)
+
+    def _update_node_features(self):
+        self._update_operation_features()
+        self._update_machine_features()
+        self._update_job_features()
 
     def step(self, actions):
         '''
@@ -374,14 +428,8 @@ class FJSPEnv(gym.Env):
         self.machines_batch[self.batch_idxes, mas, 2] += proc_times
         self.machines_batch[self.batch_idxes, mas, 3] = jobs.float()
 
-        # Update feature vectors of machines
-        self.feat_mas_batch[self.batch_idxes, 0, :] = torch.count_nonzero(self.ope_ma_adj_batch[self.batch_idxes, :, :], dim=1).float()
-        self.feat_mas_batch[self.batch_idxes, 1, mas] = self.time[self.batch_idxes] + proc_times
-        utiliz = self.machines_batch[self.batch_idxes, :, 2]
-        cur_time = self.time[self.batch_idxes, None].expand_as(utiliz)
-        utiliz = torch.minimum(utiliz, cur_time)
-        utiliz = utiliz.div(self.time[self.batch_idxes, None] + 1e-9)
-        self.feat_mas_batch[self.batch_idxes, 2, :] = utiliz
+        # AT/UR are updated only through assignment/settlement, then refresh full node features
+        self._update_node_features()
 
         # Update other variable according to actions
         self.ope_step_batch[self.batch_idxes, jobs] += 1
@@ -412,6 +460,8 @@ class FJSPEnv(gym.Env):
             self.ope_ma_adj_batch, self.mask_job_procing_batch, self.mask_job_finish_batch, self.mask_ma_procing_batch,
                           self.ope_step_batch, self.time)
         self.state.mask_job_inactive_batch = self.mask_job_inactive_batch
+        self.state.feat_job_batch = self.feat_job_batch
+        self.state.feat_job_norm_batch = self.feat_job_norm_batch
         return self.state, self.reward_batch, self.done_batch
 
     def if_no_eligible(self):
@@ -502,7 +552,10 @@ class FJSPEnv(gym.Env):
         self.makespan_batch = torch.max(self.feat_opes_batch[:, 4, :], dim=1)[0]
         self.done_batch = self.mask_job_finish_batch.all(dim=1)
         self._init_dynamic_job_activation()
+        self._update_node_features()
         self.state.mask_job_inactive_batch = self.mask_job_inactive_batch
+        self.state.feat_job_batch = self.feat_job_batch
+        self.state.feat_job_norm_batch = self.feat_job_norm_batch
         return self.state
 
     def render(self, mode='human'):

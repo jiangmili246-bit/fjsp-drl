@@ -3,7 +3,7 @@ import gym
 import torch
 
 from dataclasses import dataclass
-from env.load_data import load_fjs, nums_detec
+from env.load_data import load_fjs, nums_detec, load_job_dynamic_from_source
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -23,6 +23,13 @@ class EnvState:
     ope_sub_adj_batch: torch.Tensor = None
     end_ope_biases_batch: torch.Tensor = None
     nums_opes_batch: torch.Tensor = None
+
+    # phase-1 dynamic job attributes
+    job_id_batch: torch.Tensor = None
+    release_time_batch: torch.Tensor = None
+    due_date_batch: torch.Tensor = None
+    arrival_type_batch: torch.Tensor = None
+    priority_weight_batch: torch.Tensor = None
 
     # dynamic
     batch_idxes: torch.Tensor = None
@@ -61,7 +68,7 @@ class FJSPEnv(gym.Env):
     '''
     FJSP environment
     '''
-    def __init__(self, case, env_paras, data_source='case'):
+    def __init__(self, case, env_paras, data_source='case', dynamic_meta_list=None):
         '''
         :param case: The instance generator or the addresses of the instances
         :param env_paras: A dictionary of parameters for the environment
@@ -190,6 +197,27 @@ class FJSPEnv(gym.Env):
         self.makespan_batch = torch.max(self.feat_opes_batch[:, 4, :], dim=1)[0]  # shape: (batch_size)
         self.done_batch = self.mask_job_finish_batch.all(dim=1)  # shape: (batch_size)
 
+        # phase-1: job-level dynamic attributes (per instance in batch)
+        self.job_id_batch = []
+        self.release_time_batch = []
+        self.due_date_batch = []
+        self.arrival_type_batch = []
+        self.priority_weight_batch = []
+        for i in range(self.batch_size):
+            dynamic_meta = None if dynamic_meta_list is None else dynamic_meta_list[i]
+            dyn = load_job_dynamic_from_source(num_jobs=self.num_jobs, nums_ope=self.nums_ope_batch[i], dynamic_meta=dynamic_meta)
+            self.job_id_batch.append(dyn["job_id"])
+            self.release_time_batch.append(dyn["release_time"])
+            self.due_date_batch.append(dyn["due_date"])
+            self.arrival_type_batch.append(dyn["arrival_type"])
+            self.priority_weight_batch.append(dyn["priority_weight"])
+
+        self.job_id_batch = torch.stack(self.job_id_batch, dim=0)
+        self.release_time_batch = torch.stack(self.release_time_batch, dim=0)
+        self.due_date_batch = torch.stack(self.due_date_batch, dim=0)
+        self.arrival_type_batch = torch.stack(self.arrival_type_batch, dim=0)
+        self.priority_weight_batch = torch.stack(self.priority_weight_batch, dim=0)
+
         self.state = EnvState(batch_idxes=self.batch_idxes,
                               feat_opes_batch=self.feat_opes_batch, feat_mas_batch=self.feat_mas_batch,
                               proc_times_batch=self.proc_times_batch, ope_ma_adj_batch=self.ope_ma_adj_batch,
@@ -200,7 +228,12 @@ class FJSPEnv(gym.Env):
                               opes_appertain_batch=self.opes_appertain_batch,
                               ope_step_batch=self.ope_step_batch,
                               end_ope_biases_batch=self.end_ope_biases_batch,
-                              time_batch=self.time, nums_opes_batch=self.nums_opes)
+                              time_batch=self.time, nums_opes_batch=self.nums_opes,
+                              job_id_batch=self.job_id_batch,
+                              release_time_batch=self.release_time_batch,
+                              due_date_batch=self.due_date_batch,
+                              arrival_type_batch=self.arrival_type_batch,
+                              priority_weight_batch=self.priority_weight_batch)
 
         # Save initial data for reset
         self.old_proc_times_batch = copy.deepcopy(self.proc_times_batch)

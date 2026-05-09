@@ -88,6 +88,12 @@ class FJSPEnv(gym.Env):
         self.num_mas = env_paras["num_mas"]  # Number of machines
         self.paras = env_paras  # Parameters
         self.device = env_paras["device"]  # Computing device for PyTorch
+        self.lambda_s = env_paras.get("lambda_s", 0.01)
+        self.alpha = env_paras.get("alpha", 1.0)
+        self.beta = env_paras.get("beta", 0.1)
+        self.epsilon = env_paras.get("epsilon", 1e-6)
+        self.baseline_rule = env_paras.get("baseline_rule", "FIFO")
+        self.F_best = float("inf")
         # load instance
         num_data = 8  # The amount of data extracted from instance
         tensors = [[] for _ in range(num_data)]
@@ -193,6 +199,7 @@ class FJSPEnv(gym.Env):
 
         self.makespan_batch = torch.max(self.feat_opes_batch[:, 4, :], dim=1)[0]  # shape: (batch_size)
         self.done_batch = self.mask_job_finish_batch.all(dim=1)  # shape: (batch_size)
+        self.episode_log = {}
 
         # phase-1: job-level dynamic attributes (per instance in batch)
         self.job_id_batch = []
@@ -372,6 +379,35 @@ class FJSPEnv(gym.Env):
         self._update_machine_features()
         self._update_job_features()
 
+    def _compute_completion_times(self):
+        return self.schedules_batch[:, :, 3].gather(1, self.end_ope_biases_batch)
+
+    def _compute_weighted_metrics(self):
+        C = self._compute_completion_times()
+        DD = self.due_date_batch
+        W = self.priority_weight_batch
+        lateness = C - DD
+        tardiness = torch.clamp(lateness, min=0.0)
+        F_real = torch.sum(W * torch.abs(lateness), dim=1)
+        weighted_tardiness = torch.sum(W * tardiness, dim=1)
+        urg_mask = (self.arrival_type_batch == 2).float()
+        urg_den = torch.clamp(torch.sum(urg_mask, dim=1), min=1.0)
+        urg_tard = torch.sum(tardiness * urg_mask, dim=1)
+        urg_on_time = torch.sum((tardiness == 0).float() * urg_mask, dim=1) / urg_den
+        return F_real, weighted_tardiness, urg_tard, urg_on_time
+
+    def _compute_reference_objective(self):
+        # Lightweight baseline proxy (FIFO/EDD/WSPT) for reward normalization.
+        mean_pt = torch.mean(self.proc_times_batch, dim=2)
+        est_C = torch.zeros((self.batch_size, self.num_jobs), device=mean_pt.device)
+        for b in range(self.batch_size):
+            for j in range(self.num_jobs):
+                s = int(self.num_ope_biases_batch[b, j].item())
+                e = int(self.end_ope_biases_batch[b, j].item()) + 1
+                est_C[b, j] = self.release_time_batch[b, j] + mean_pt[b, s:e].sum()
+        lateness = est_C - self.due_date_batch
+        return torch.sum(self.priority_weight_batch * torch.abs(lateness), dim=1)
+
     def get_ready_operations(self):
         """Return bool mask [B, num_opes] for ready-and-unscheduled operations."""
         ready = torch.zeros((self.batch_size, self.num_opes), dtype=torch.bool, device=self.proc_times_batch.device)
@@ -484,9 +520,26 @@ class FJSPEnv(gym.Env):
         self.done_batch = self.mask_job_finish_batch.all(dim=1)
         self.done = self.done_batch.all()
 
-        max = torch.max(self.feat_opes_batch[:, 4, :], dim=1)[0]
-        self.reward_batch = self.makespan_batch - max
-        self.makespan_batch = max
+        # Phase-6 reward: weighted earliness/tardiness objective
+        self.makespan_batch = torch.max(self.schedules_batch[:, :, 3], dim=1)[0]
+        F_real, weighted_tardiness, urg_tard, urg_on_time = self._compute_weighted_metrics()
+        F_ref = self._compute_reference_objective()
+        reward_terminal = self.alpha * (F_ref - F_real) / (F_ref + self.epsilon)
+        best_now = torch.min(F_real).item()
+        if best_now <= self.F_best:
+            reward_terminal = reward_terminal + self.beta
+            self.F_best = best_now
+        self.reward_batch = torch.full((self.batch_size,), -self.lambda_s, device=F_real.device)
+        self.reward_batch[self.done_batch] = reward_terminal[self.done_batch]
+        self.episode_log = {
+            "F_real": F_real.detach().cpu(),
+            "F_ref": F_ref.detach().cpu(),
+            "F_best": self.F_best,
+            "makespan": self.makespan_batch.detach().cpu(),
+            "weighted_tardiness": weighted_tardiness.detach().cpu(),
+            "urgent_job_tardiness": urg_tard.detach().cpu(),
+            "urgent_job_on_time_rate": urg_on_time.detach().cpu(),
+        }
 
         # Check if there are still O-M pairs to be processed, otherwise the environment transits to the next time
         flag_trans_2_next_time = self.if_no_eligible()

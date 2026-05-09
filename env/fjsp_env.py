@@ -33,6 +33,8 @@ class EnvState:
     mask_job_inactive_batch: torch.Tensor = None
     feat_job_batch: torch.Tensor = None
     feat_job_norm_batch: torch.Tensor = None
+    legal_action_mask_batch: torch.Tensor = None
+    ready_opes_batch: torch.Tensor = None
 
     # dynamic
     batch_idxes: torch.Tensor = None
@@ -370,6 +372,33 @@ class FJSPEnv(gym.Env):
         self._update_machine_features()
         self._update_job_features()
 
+    def get_ready_operations(self):
+        """Return bool mask [B, num_opes] for ready-and-unscheduled operations."""
+        ready = torch.zeros((self.batch_size, self.num_opes), dtype=torch.bool, device=self.proc_times_batch.device)
+        for b in range(self.batch_size):
+            for j in range(self.num_jobs):
+                if self.mask_job_inactive_batch[b, j] or self.mask_job_finish_batch[b, j]:
+                    continue
+                ope = int(min(self.ope_step_batch[b, j].item(), self.end_ope_biases_batch[b, j].item()))
+                if self.schedules_batch[b, ope, 0] == 0:
+                    ready[b, ope] = True
+        return ready
+
+    def build_legal_actions(self):
+        """
+        Build legal O-M action mask.
+        legal_action_mask_batch shape: [B, num_opes, num_mas]
+        """
+        ready = self.get_ready_operations()
+        legal = torch.zeros((self.batch_size, self.num_opes, self.num_mas), dtype=torch.bool, device=ready.device)
+        for b in range(self.batch_size):
+            ready_idx = torch.where(ready[b])[0]
+            if ready_idx.numel() > 0:
+                legal[b, ready_idx, :] = self.ope_ma_adj_batch[b, ready_idx, :] == 1
+        self.state.ready_opes_batch = ready
+        self.state.legal_action_mask_batch = legal
+        return ready, legal
+
     def step(self, actions):
         '''
         Environment transition function
@@ -382,6 +411,21 @@ class FJSPEnv(gym.Env):
         opes = actions[0, :]
         mas = actions[1, :]
         jobs = actions[2, :]
+
+        # strict legality checks for Phase-5
+        ready, legal = self.build_legal_actions()
+        for idx, b in enumerate(self.batch_idxes):
+            o = int(opes[idx].item())
+            m = int(mas[idx].item())
+            j = int(jobs[idx].item())
+            if self.mask_job_inactive_batch[b, j]:
+                raise ValueError(f"Illegal action: job {j} has not arrived in batch {int(b)}")
+            if not ready[b, o]:
+                raise ValueError(f"Illegal action: operation {o} is not ready in batch {int(b)}")
+            if self.schedules_batch[b, o, 0] == 1:
+                raise ValueError(f"Illegal action: operation {o} already scheduled in batch {int(b)}")
+            if not legal[b, o, m]:
+                raise ValueError(f"Illegal action: machine {m} is not candidate for operation {o} in batch {int(b)}")
         self.N += 1
 
         # Removed unselected O-M arcs of the scheduled operations
@@ -462,6 +506,7 @@ class FJSPEnv(gym.Env):
         self.state.mask_job_inactive_batch = self.mask_job_inactive_batch
         self.state.feat_job_batch = self.feat_job_batch
         self.state.feat_job_norm_batch = self.feat_job_norm_batch
+        self.build_legal_actions()
         return self.state, self.reward_batch, self.done_batch
 
     def if_no_eligible(self):
@@ -556,6 +601,7 @@ class FJSPEnv(gym.Env):
         self.state.mask_job_inactive_batch = self.mask_job_inactive_batch
         self.state.feat_job_batch = self.feat_job_batch
         self.state.feat_job_norm_batch = self.feat_job_norm_batch
+        self.build_legal_actions()
         return self.state
 
     def render(self, mode='human'):

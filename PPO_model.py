@@ -256,7 +256,8 @@ class HGNNScheduler(nn.Module):
         # Matrix indicating whether job is eligible
         # shape: [len(batch_idxes), num_jobs, num_mas]
         job_eligible = ~(state.mask_job_procing_batch[batch_idxes] +
-                         state.mask_job_finish_batch[batch_idxes])[:, :, None].expand_as(h_jobs_padding[..., 0])
+                         state.mask_job_finish_batch[batch_idxes] +
+                         state.mask_job_inactive_batch[batch_idxes])[:, :, None].expand_as(h_jobs_padding[..., 0])
         # shape: [len(batch_idxes), num_jobs, num_mas]
         eligible = job_eligible & ma_eligible & (eligible_proc == 1)
         if (~(eligible)).all():

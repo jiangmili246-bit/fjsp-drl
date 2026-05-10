@@ -3,8 +3,8 @@
     "num_jobs": 10,
     "num_mas": 5,
     "batch_size": 20,
-    "ope_feat_dim" : 6,
-    "ma_feat_dim" : 3,
+    "ope_feat_dim": 6,
+    "ma_feat_dim": 3,
     "show_mode": "print",
     "valid_batch_size": 100
   },
@@ -14,17 +14,25 @@
     "in_size_ope": 6,
     "out_size_ope": 8,
     "hidden_size_ope": 128,
-    "num_heads": [1, 1],
+    "num_heads": [
+      1,
+      1
+    ],
     "dropout": 0.0,
     "n_latent_actor": 64,
     "n_latent_critic": 64,
     "n_hidden_actor": 3,
     "n_hidden_critic": 3,
-    "action_dim": 1
+    "action_dim": 1,
+    "hgat_hidden_dim": 64,
+    "hgat_heads": 4
   },
   "train_paras": {
     "lr": 0.0002,
-    "betas": [0.9, 0.999],
+    "betas": [
+      0.9,
+      0.999
+    ],
     "gamma": 1.0,
     "K_epochs": 3,
     "eps_clip": 0.2,
@@ -41,11 +49,18 @@
   },
   "test_paras": {
     "num_ins": 100,
-    "rules": ["DRL"],
+    "rules": [
+      "DRL"
+    ],
     "sample": false,
     "num_sample": 100,
     "num_average": 10,
     "public_ins": true,
     "data_path": "1005"
-  }
+  },
+  "model_type": [
+    "baseline",
+    "gat_ppo",
+    "hgat_ppo"
+  ]
 }

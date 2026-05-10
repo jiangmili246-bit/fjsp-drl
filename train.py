@@ -112,6 +112,14 @@ def main():
             memories.is_terminals.append(dones)
             # gpu_tracker.track()  # Used to monitor memory (of gpu)
         print("spend_time: ", time.time()-last_time)
+        if hasattr(env, "episode_log") and env.episode_log:
+            print("F_real:", env.episode_log["F_real"].mean().item(),
+                  "F_ref:", env.episode_log["F_ref"].mean().item(),
+                  "F_best:", env.episode_log["F_best"],
+                  "makespan:", env.episode_log["makespan"].mean().item(),
+                  "weighted_tardiness:", env.episode_log["weighted_tardiness"].mean().item(),
+                  "urgent_job_tardiness:", env.episode_log["urgent_job_tardiness"].mean().item(),
+                  "urgent_job_on_time_rate:", env.episode_log["urgent_job_on_time_rate"].mean().item())
 
         # Verify the solution
         gantt_result = env.validate_gantt()[0]

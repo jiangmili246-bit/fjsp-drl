@@ -1,0 +1,7 @@
+results/*.png
+results/*.pt
+results/*.csv
+results/*.txt
+__pycache__/
+*.pyc
+.venv/

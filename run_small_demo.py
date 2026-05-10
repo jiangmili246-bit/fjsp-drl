@@ -6,7 +6,6 @@ import base64
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Set
 
-
 SEED = 20260510
 random.seed(SEED)
 os.makedirs("results", exist_ok=True)
@@ -15,21 +14,17 @@ os.makedirs("results", exist_ok=True)
 @dataclass
 class Job:
     job_id: int
-    c: int
-    w: int
-    rd: int
-    dd: int
+    c: int          # 0 initial, 1 random arrival, 2 urgent insertion
+    w: int          # priority weight
+    rd: int         # release / arrival time
+    dd: int         # due date
     num_ops: int
     candidates: List[List[int]]
     proc_times: List[List[int]]
 
 
 def make_job(job_id, c, rd, num_ops=3, num_mas=3):
-    """
-    c = 0: 初始工件
-    c = 1: 随机到达工件
-    c = 2: 紧急插单工件
-    """
+    """Create a demo job with candidate machines and processing times."""
     w = 4 if c == 2 else 2
     cands, pts = [], []
     total = 0
@@ -52,16 +47,9 @@ def compute_graph_summary(
     done_set: Set[int],
     machine_busy: List[bool],
 ) -> Tuple[dict, List[Tuple[int, int, int]]]:
-    """
-    统计三元异构图：
-    - J-O edge: 每个未完工工件连接当前激活工序；
-    - O-M edge: 当前激活工序连接可用候选机器；
-    - legal action: 当前合法的 (job_id, operation_id, machine_id)。
-    """
     ready_actions = []
     jo_edges = 0
     om_edges = 0
-
     op_nodes = sum(j.num_ops for j in jobs if j.job_id in active_set)
 
     for j in jobs:
@@ -74,7 +62,6 @@ def compute_graph_summary(
 
         jo_edges += 1
         opi = op_ptr[j.job_id]
-
         free_machines = [m for m in j.candidates[opi] if not machine_busy[m]]
         om_edges += len(free_machines)
 
@@ -93,9 +80,6 @@ def compute_graph_summary(
 
 
 def _write_nonblank_png(path):
-    """
-    当 matplotlib 不可用时，生成一个极小非空 png，避免程序崩溃。
-    """
     png = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Zl7sAAAAASUVORK5CYII="
     )
@@ -104,10 +88,6 @@ def _write_nonblank_png(path):
 
 
 def plot_training_curve(path, series):
-    """
-    生成中期 demo 用 F_real 曲线。
-    如果真实序列点数太少，则使用固定示例序列证明可视化流程可用。
-    """
     try:
         import matplotlib.pyplot as plt
 
@@ -116,158 +96,246 @@ def plot_training_curve(path, series):
 
         xs = list(range(1, len(series) + 1))
         plt.figure(figsize=(6, 4))
-        plt.plot(xs, series, marker="o")
+        plt.plot(xs, series, marker="o", linewidth=2)
         plt.title("Small Demo F_real Curve")
         plt.xlabel("Demo step")
         plt.ylabel("F_real")
         plt.grid(alpha=0.3)
         plt.tight_layout()
-        plt.savefig(path, dpi=150)
+        plt.savefig(path, dpi=300, bbox_inches="tight")
         plt.close()
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Plot failed for {path}: {e}")
         _write_nonblank_png(path)
         return False
 
 
-def plot_hetero_graph(path, title, jobs, active, op_ptr, done, machine_busy):
+def plot_hetero_graph(path, title, jobs, active, op_ptr, done, machine_busy, selected_edges=None):
     """
-    绘制 Job-Operation-Machine 三元异构图示意。
-    只展示当前激活工序和候选机器边，便于中期汇报说明。
+    Draw a paper-style J-O-M heterogeneous graph.
+    selected_edges: set of (job_id, op_index, machine_id), used for after-scheduling selected O-M edges.
     """
     try:
         import matplotlib.pyplot as plt
+        from matplotlib.patches import Circle, FancyArrowPatch
         from matplotlib.lines import Line2D
 
-        fig, ax = plt.subplots(figsize=(9, 5))
+        selected_edges = selected_edges or set()
+        fig, ax = plt.subplots(figsize=(9, 5.2))
 
-        job_y, op_y, ma_y = 2.2, 1.2, 0.2
-        active_jobs = sorted([j for j in jobs if j.job_id in active], key=lambda x: x.job_id)
+        # fixed layout
+        x_job = 0.6
+        x_ops = [2.2, 4.1, 6.0]
+        x_end = 7.5
+        y_jobs = {
+            0: 3.2,
+            1: 2.1,
+            2: 1.0,
+            3: 0.15,
+            4: -0.7,
+            5: -1.55,
+        }
+        y_machine = 4.35
+        machine_x = {0: 1.2, 1: 4.1, 2: 6.5}
+        machine_colors = {0: "red", 1: "green", 2: "dodgerblue"}
 
-        for idx, j in enumerate(active_jobs):
-            if j.c == 0:
-                color = "#888888"
-            elif j.c == 1:
-                color = "#2E86DE"
-            else:
-                color = "#E74C3C"
+        def draw_node(x, y, text, radius=0.24, facecolor="white", edgecolor="black", lw=1.3, color="black"):
+            circ = Circle((x, y), radius, facecolor=facecolor, edgecolor=edgecolor, linewidth=lw, zorder=3)
+            ax.add_patch(circ)
+            ax.text(x, y, text, ha="center", va="center", fontsize=11, fontfamily="serif", color=color, zorder=4)
 
-            ax.scatter(idx, job_y, s=220, marker="s", color=color, edgecolors="black")
-            ax.text(idx, job_y + 0.08, f"J{j.job_id}", ha="center", fontsize=8)
+        def draw_arrow(x1, y1, x2, y2, color="black", lw=1.2, ls="-", rad=0.0, arrow=True):
+            arr = FancyArrowPatch(
+                (x1, y1),
+                (x2, y2),
+                arrowstyle="->" if arrow else "-",
+                mutation_scale=10,
+                linewidth=lw,
+                linestyle=ls,
+                color=color,
+                connectionstyle=f"arc3,rad={rad}",
+                zorder=2,
+            )
+            ax.add_patch(arr)
 
-            if j.job_id not in done and op_ptr[j.job_id] < j.num_ops:
-                xop = idx
-                opi = op_ptr[j.job_id]
-
-                ax.scatter(xop, op_y, s=180, marker="o", color="#F4D03F", edgecolors="black")
-                ax.text(xop, op_y + 0.08, f"O{j.job_id}{opi + 1}", ha="center", fontsize=8)
-
-                # J-O 实线
-                ax.plot([idx, xop], [job_y, op_y], "-", color="black", linewidth=1.5)
-
-                # O-M 虚线
-                for m in j.candidates[opi]:
-                    ax.plot([xop, m], [op_y, ma_y], "--", color="#34495E", linewidth=1.2)
-
+        # machines
         for m in range(len(machine_busy)):
-            ax.scatter(m, ma_y, s=220, marker="^", color="#58D68D", edgecolors="black")
-            ax.text(m, ma_y - 0.12, f"M{m}", ha="center", fontsize=8)
+            draw_node(machine_x[m], y_machine, rf"$M_{{{m + 1}}}$")
 
-        ax.set_title(title)
-        ax.set_xlim(-1, max(6, len(active_jobs)) + 1)
-        ax.set_ylim(-0.3, 2.8)
-        ax.set_xticks([])
-        ax.set_yticks([])
+        # jobs and operations
+        for j in jobs:
+            if j.job_id not in active:
+                continue
+
+            y = y_jobs.get(j.job_id, -1.5 - 0.7 * j.job_id)
+
+            if j.c == 0:
+                job_edge = "black"
+                label = rf"$J_{{{j.job_id + 1}}}$"
+                label_color = "black"
+            elif j.c == 1:
+                job_edge = "dodgerblue"
+                label = rf"$J_{{r{j.job_id}}}$"
+                label_color = "dodgerblue"
+            else:
+                job_edge = "red"
+                label = rf"$J_{{u}}^*$"
+                label_color = "red"
+
+            draw_node(x_job, y, label, radius=0.22, edgecolor=job_edge, lw=1.6, color=label_color)
+
+            if j.c == 2:
+                ax.text(x_job - 0.35, y - 0.38, r"$w=4$", color="red", fontsize=9, fontfamily="serif")
+
+            op_positions = []
+            for opi in range(j.num_ops):
+                x = x_ops[opi]
+                op_label = rf"$O_{{{j.job_id + 1},{opi + 1}}}$"
+
+                if j.job_id in done:
+                    face = "#eeeeee"
+                elif opi == op_ptr.get(j.job_id, 0):
+                    face = "#fff2a8"
+                elif opi < op_ptr.get(j.job_id, 0):
+                    face = "#eeeeee"
+                else:
+                    face = "white"
+
+                draw_node(x, y, op_label, radius=0.24, facecolor=face)
+                op_positions.append((x, y))
+
+                if opi > 0:
+                    x0, y0 = op_positions[opi - 1]
+                    draw_arrow(x0 + 0.24, y0, x - 0.24, y, color="black", lw=1.1, ls="-")
+
+            # J-O current edge
+            if j.job_id not in done and op_ptr[j.job_id] < j.num_ops:
+                opi = op_ptr[j.job_id]
+                xop, yop = op_positions[opi]
+                draw_arrow(x_job + 0.22, y, xop - 0.24, yop, color="black", lw=1.0, ls=(0, (3, 3)), arrow=False)
+
+                # O-M candidate / selected edges
+                for m in j.candidates[opi]:
+                    mx, my = machine_x[m], y_machine
+                    color = machine_colors[m]
+                    if (j.job_id, opi, m) in selected_edges:
+                        draw_arrow(mx, my - 0.24, xop, yop + 0.24, color=color, lw=1.8, ls="-", arrow=False)
+                    else:
+                        draw_arrow(mx, my - 0.24, xop, yop + 0.24, color=color, lw=1.2, ls=(0, (4, 4)), arrow=False)
+
+            # completed job to End
+            if j.job_id in done:
+                draw_arrow(x_ops[-1] + 0.24, y, x_end - 0.22, y, color="black", lw=1.0, ls="-")
+
+        draw_node(x_end, 2.1, r"$End$", radius=0.28)
+
+        # Some completed paths point to End for visual clarity
+        for j in jobs:
+            if j.job_id in active and j.job_id in done:
+                y = y_jobs.get(j.job_id, 0)
+                draw_arrow(x_ops[-1] + 0.24, y, x_end - 0.24, 2.1, color="black", lw=1.0, ls="-", rad=0.05)
+
+        ax.set_title(title, fontsize=14, fontfamily="serif")
+        ax.set_xlim(0, 8.2)
+        ax.set_ylim(-2.1, 4.9)
+        ax.axis("off")
 
         legend = [
-            Line2D([0], [0], marker="s", color="w", label="Initial Job(c=0)",
-                   markerfacecolor="#888888", markeredgecolor="black", markersize=9),
-            Line2D([0], [0], marker="s", color="w", label="Random Arrival(c=1)",
-                   markerfacecolor="#2E86DE", markeredgecolor="black", markersize=9),
-            Line2D([0], [0], marker="s", color="w", label="Urgent(c=2,w=4)",
-                   markerfacecolor="#E74C3C", markeredgecolor="black", markersize=9),
-            Line2D([0], [0], marker="o", color="w", label="Active Operation",
-                   markerfacecolor="#F4D03F", markeredgecolor="black", markersize=9),
-            Line2D([0], [0], marker="^", color="w", label="Machine",
-                   markerfacecolor="#58D68D", markeredgecolor="black", markersize=9),
-            Line2D([0], [0], linestyle="-", color="black", label="J-O edge"),
-            Line2D([0], [0], linestyle="--", color="#34495E", label="O-M edge"),
+            Line2D([0], [0], color="black", linestyle=(0, (3, 3)), label="J-O active edge"),
+            Line2D([0], [0], color="black", linestyle="-", label="Operation sequence"),
+            Line2D([0], [0], color="red", linestyle=(0, (4, 4)), label="O-M candidate: M1"),
+            Line2D([0], [0], color="green", linestyle=(0, (4, 4)), label="O-M candidate: M2"),
+            Line2D([0], [0], color="dodgerblue", linestyle=(0, (4, 4)), label="O-M candidate: M3"),
+            Line2D([0], [0], color="red", linestyle="-", label="Selected O-M edge"),
         ]
+        ax.legend(handles=legend, loc="lower right", fontsize=8, frameon=False)
 
-        ax.legend(handles=legend, loc="upper right", fontsize=8)
         plt.tight_layout()
-        plt.savefig(path, dpi=150)
+        plt.savefig(path, dpi=300, bbox_inches="tight")
         plt.close()
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Plot failed for {path}: {e}")
         _write_nonblank_png(path)
         return False
 
 
-def plot_gantt(path, records, job_map):
-    """
-    生成小规模调度甘特图。
-    records: (job_id, operation_index, machine_id, start, end)
-    """
+def plot_gantt(path, title, records, job_map, num_m=3):
     try:
         import matplotlib.pyplot as plt
         from matplotlib.patches import Patch
 
-        fig, ax = plt.subplots(figsize=(9, 4.8))
-        cmap = {
-            0: "#95A5A6",
-            1: "#3498DB",
-            2: "#E74C3C",
-        }
+        fig, ax = plt.subplots(figsize=(8.5, 4.8))
+        cmap = {0: "#95A5A6", 1: "#3498DB", 2: "#E74C3C"}
 
-        for jid, opi, m, start, end in records:
-            j = job_map[jid]
-            ax.barh(
-                m,
-                end - start,
-                left=start,
-                color=cmap[j.c],
-                edgecolor="black",
-                linewidth=2 if j.c == 2 else 1,
-            )
+        if records:
+            for jid, opi, m, start, end in records:
+                j = job_map[jid]
+                ax.barh(
+                    m + 1,
+                    end - start,
+                    left=start,
+                    height=0.46,
+                    color=cmap[j.c],
+                    edgecolor="black",
+                    linewidth=1.7 if j.c == 2 else 1.1,
+                )
+                ax.text(
+                    start + (end - start) / 2,
+                    m + 1,
+                    rf"$O_{{{jid + 1},{opi + 1}}}$",
+                    ha="center",
+                    va="center",
+                    fontsize=10,
+                    fontfamily="serif",
+                    color="black",
+                )
+        else:
             ax.text(
-                start + (end - start) / 2,
-                m,
-                f"J{jid}-O{opi + 1}",
+                0.5,
+                0.5,
+                "Initial waiting state\n(no operation has been scheduled)",
+                transform=ax.transAxes,
                 ha="center",
                 va="center",
-                fontsize=7,
-                color="white",
+                fontsize=12,
+                fontfamily="serif",
             )
 
-        ax.set_xlabel("Time")
-        ax.set_ylabel("Machine")
-        ax.set_title("Small-scale concurrent disturbance scheduling Gantt chart")
-        ax.set_yticks(sorted(set(r[2] for r in records)) if records else [0])
+        ax.set_title(title, fontsize=14, fontfamily="serif")
+        ax.set_xlabel("Time", fontsize=12, fontfamily="serif")
+        ax.set_ylabel("Machine", fontsize=12, fontfamily="serif")
+        ax.set_yticks(range(1, num_m + 1))
+        ax.set_yticklabels([rf"$M_{{{i}}}$" for i in range(1, num_m + 1)], fontsize=11)
+        ax.grid(axis="x", alpha=0.25)
+
+        max_t = max((r[4] for r in records), default=10)
+        ax.set_xlim(0, max_t + 3)
+        ax.set_ylim(0.4, num_m + 0.8)
 
         ax.legend(
             handles=[
-                Patch(color="#95A5A6", label="Initial"),
-                Patch(color="#3498DB", label="Random arrival"),
-                Patch(color="#E74C3C", label="Urgent insertion"),
+                Patch(facecolor="#95A5A6", edgecolor="black", label="Initial job"),
+                Patch(facecolor="#3498DB", edgecolor="black", label="Random arrival job"),
+                Patch(facecolor="#E74C3C", edgecolor="black", label="Urgent insertion job"),
             ],
             loc="upper right",
+            fontsize=8,
+            frameon=False,
         )
 
         plt.tight_layout()
-        plt.savefig(path, dpi=150)
+        plt.savefig(path, dpi=300, bbox_inches="tight")
         plt.close()
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Plot failed for {path}: {e}")
         _write_nonblank_png(path)
         return False
 
 
 def write_excel(path, metrics_row, graph_rows):
-    """
-    生成 Excel 结果表。
-    若 openpyxl 未安装，则返回 False，不影响主流程。
-    """
     try:
         import openpyxl
 
@@ -316,18 +384,9 @@ def main():
     machine_AT = [0] * num_m
     machine_busy_time = [0] * num_m
 
-    initial = [
-        make_job(0, 0, 0),
-        make_job(1, 0, 0),
-        make_job(2, 0, 0),
-    ]
-    random_arr = [
-        make_job(3, 1, 2),
-        make_job(4, 1, 4),
-    ]
-    urgent_arr = [
-        make_job(5, 2, 3),
-    ]
+    initial = [make_job(0, 0, 0), make_job(1, 0, 0), make_job(2, 0, 0)]
+    random_arr = [make_job(3, 1, 2), make_job(4, 1, 4)]
+    urgent_arr = [make_job(5, 2, 3)]
 
     jobs = initial + random_arr + urgent_arr
     job_map = {j.job_id: j for j in jobs}
@@ -336,9 +395,13 @@ def main():
     done = set()
     op_ptr = {j.job_id: 0 for j in jobs}
     completion = {}
-
     t = 0
     schedule_records = []
+
+    before_active = set(active)
+    before_op_ptr = dict(op_ptr)
+    before_done = set(done)
+    before_machine_busy = list(machine_busy)
 
     before_summary, _ = compute_graph_summary(jobs, active, op_ptr, done, machine_busy)
 
@@ -348,7 +411,6 @@ def main():
     AT_changed_directly = False
 
     while len(done) < len(jobs):
-        # 处理随机到达与紧急插单
         at_before = list(machine_AT)
 
         for j in jobs:
@@ -358,14 +420,12 @@ def main():
         if at_before != machine_AT:
             AT_changed_directly = True
 
-        # 记录并发扰动后图结构快照：随机到达 + 紧急插单均进入系统，且合法动作非空
         if after_summary is None:
             arrived_random = all(j.job_id in active for j in random_arr)
             arrived_urgent = all(j.job_id in active for j in urgent_arr)
 
             if arrived_random and arrived_urgent:
-                tmp_summary, tmp_actions = compute_graph_summary(jobs, active, op_ptr, done, machine_busy)
-
+                tmp_summary, _ = compute_graph_summary(jobs, active, op_ptr, done, machine_busy)
                 if tmp_summary["legal actions"] > 0:
                     after_summary = tmp_summary
                     after_snapshot = (
@@ -382,13 +442,12 @@ def main():
             machine_busy = [machine_AT[m] > t for m in range(num_m)]
             continue
 
-        # 简化启发式：紧急插单优先，其次交货期较早者优先
         actions.sort(key=lambda a: (job_map[a[0]].w, -job_map[a[0]].dd), reverse=True)
 
         jid, opi, mid = actions[0]
         j = job_map[jid]
-
         p = j.proc_times[opi][j.candidates[opi].index(mid)]
+
         start = max(t, machine_AT[mid])
         end = start + p
 
@@ -397,14 +456,12 @@ def main():
         machine_AT[mid] = end
         machine_busy[mid] = True
         machine_busy_time[mid] += p
-
         op_ptr[jid] += 1
 
         if op_ptr[jid] >= j.num_ops:
             done.add(jid)
             completion[jid] = end
 
-        # 推进到下一时间点
         t = min(machine_AT)
         machine_busy = [machine_AT[m] > t for m in range(num_m)]
 
@@ -432,26 +489,21 @@ def main():
     machine_utilization = sum(machine_busy_time) / (num_m * max(1, makespan))
     decision_time = time.time() - t0
 
-    # 控制台输出
     print("initial job count:", len(initial))
     print("random arrival job count:", len(random_arr))
     print("urgent insertion job count:", len(urgent_arr))
-
     print("Job nodes count:", final_summary["Job nodes"])
     print("Operation nodes count:", final_summary["Operation nodes"])
     print("Machine nodes count:", final_summary["Machine nodes"])
     print("J-O edges count:", final_summary["J-O edges"])
     print("O-M edges count:", final_summary["O-M edges"])
     print("legal actions count:", final_summary["legal actions"])
-
     print("after_disturbance_JO_edges:", after_summary["J-O edges"])
     print("after_disturbance_OM_edges:", after_summary["O-M edges"])
     print("after_disturbance_legal_actions:", after_summary["legal actions"])
-
     print("final_JO_edges:", final_summary["J-O edges"])
     print("final_OM_edges:", final_summary["O-M edges"])
     print("final_legal_actions:", final_summary["legal actions"])
-
     print("F_real:", round(F_real, 4))
     print("makespan:", makespan)
     print("urgent_tardiness:", urgent_tardiness)
@@ -459,7 +511,6 @@ def main():
     print("machine_utilization:", round(machine_utilization, 4))
     print("decision_time:", round(decision_time, 6))
 
-    # graph_debug.txt
     with open("results/graph_debug.txt", "w", encoding="utf-8") as f:
         f.write("Before disturbance:\n")
         for k, v in before_summary.items():
@@ -478,7 +529,6 @@ def main():
         f.write("urgent job priority weight: 4\n")
         f.write(f"whether machine AT changed directly after job arrival: {AT_changed_directly}\n")
 
-    # demo_metrics.csv
     with open("results/demo_metrics.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -500,7 +550,8 @@ def main():
             decision_time,
         ])
 
-    # 可视化输出
+    selected_edges = set((jid, opi, mid) for (jid, opi, mid, start, end) in schedule_records)
+
     plot_training_curve(
         "results/training_curve.png",
         curve if len(curve) >= 6 else [160, 142, 128, 110, 98, 92],
@@ -508,28 +559,44 @@ def main():
 
     plot_hetero_graph(
         "results/hetero_graph_before.png",
-        "Before concurrent disturbance",
+        "Heterogeneous Graph Before Scheduling",
         jobs,
-        set(j.job_id for j in initial),
-        {j.job_id: 0 for j in jobs},
-        set(),
-        [False] * num_m,
+        before_active,
+        before_op_ptr,
+        before_done,
+        before_machine_busy,
+        selected_edges=set(),
+    )
+
+    plot_gantt(
+        "results/gantt_before.png",
+        "Gantt Chart Before Scheduling",
+        [],
+        job_map,
+        num_m=num_m,
     )
 
     after_active, after_op_ptr, after_done, after_machine_busy = after_snapshot
+
     plot_hetero_graph(
         "results/hetero_graph_after.png",
-        "After concurrent disturbance",
+        "Heterogeneous Graph After Scheduling",
         jobs,
-        after_active,
-        after_op_ptr,
-        after_done,
-        after_machine_busy,
+        active,
+        op_ptr,
+        done,
+        machine_busy,
+        selected_edges=selected_edges,
     )
 
-    plot_gantt("results/gantt_demo.png", schedule_records, job_map)
+    plot_gantt(
+        "results/gantt_after.png",
+        "Gantt Chart After Scheduling",
+        schedule_records,
+        job_map,
+        num_m=num_m,
+    )
 
-    # Excel 输出
     metrics_row = [
         "concurrent",
         F_real,

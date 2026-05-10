@@ -1,0 +1,8 @@
+results/*.png
+results/*.xlsx
+results/*.csv
+results/*.txt
+results/*.pt
+__pycache__/
+*.pyc
+.venv/

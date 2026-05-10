@@ -90,3 +90,24 @@ def edge_detec(line, num_ope_bias, matrix_proc_time, matrix_pre_proc, matrix_cal
             flag += 1
             flag_time = 0
     return num_ope
+
+
+def load_job_dynamic_from_source(num_jobs, nums_ope, dynamic_meta=None, due_date_factor=8.0):
+    """Load or synthesize job-level dynamic attributes (Phase-1).
+
+    dynamic_meta can be None or a dict with keys:
+    job_id, release_time, due_date, arrival_type, priority_weight.
+    Missing keys fall back to defaults.
+    """
+    from utils.job_dynamic import build_default_job_dynamic
+
+    defaults = build_default_job_dynamic(num_jobs=num_jobs, nums_ope=nums_ope, due_date_factor=due_date_factor)
+    if dynamic_meta is None:
+        return defaults
+
+    out = dict(defaults)
+    for key in ["job_id", "release_time", "due_date", "arrival_type", "priority_weight"]:
+        if key in dynamic_meta and dynamic_meta[key] is not None:
+            out[key] = torch.as_tensor(dynamic_meta[key], dtype=out[key].dtype)
+    out["num_ops"] = torch.as_tensor(nums_ope, dtype=torch.long)
+    return out

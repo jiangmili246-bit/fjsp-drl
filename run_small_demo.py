@@ -2,15 +2,12 @@ import csv
 import os
 import random
 import time
-import base64
 from dataclasses import dataclass
 from typing import Dict, List, Set, Tuple
 
-from utils.plot_demo_figures import (
-    plot_hetero_graph_before,
-    plot_hetero_graph_after,
-    plot_gantt,
-)
+from utils.plot_demo_figures import plot_gantt
+from utils.plot_hetero_graph import build_hetero_graph_snapshot, draw_hetero_graph
+
 
 SEED = 20260510
 random.seed(SEED)
@@ -88,15 +85,6 @@ def compute_graph_summary(
     return summary, ready_actions
 
 
-def _write_nonblank_png(path: str) -> None:
-    """Write a tiny valid PNG when plotting dependencies are unavailable."""
-    png = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Zl7sAAAAASUVORK5CYII="
-    )
-    with open(path, "wb") as f:
-        f.write(png)
-
-
 def plot_training_curve(path: str, series: List[float]) -> bool:
     """Generate a visible F_real curve for mid-term demo evidence."""
     try:
@@ -120,7 +108,6 @@ def plot_training_curve(path: str, series: List[float]) -> bool:
 
     except Exception as e:
         print(f"Plot failed for {path}: {e}")
-        _write_nonblank_png(path)
         return False
 
 
@@ -158,8 +145,8 @@ def write_excel(path: str, metrics_row: List, graph_rows: List[List]) -> bool:
             "legal_actions",
         ])
 
-        for r in graph_rows:
-            ws2.append(r)
+        for row in graph_rows:
+            ws2.append(row)
 
         wb.save(path)
         return True
@@ -178,7 +165,6 @@ def main() -> None:
     machine_AT = [0] * num_m
     machine_busy_time = [0] * num_m
 
-    # Initial jobs and concurrent disturbance jobs.
     initial = [
         make_job(0, 0, 0),
         make_job(1, 0, 0),
@@ -198,15 +184,25 @@ def main() -> None:
     job_map = {j.job_id: j for j in jobs}
 
     active = set(j.job_id for j in initial)
-    done = set()
+    done: Set[int] = set()
     op_ptr = {j.job_id: 0 for j in jobs}
-    completion = {}
+    completion: Dict[int, int] = {}
 
     t = 0
     schedule_records = []
 
     before_summary, _ = compute_graph_summary(jobs, active, op_ptr, done, machine_busy)
 
+    initial_snapshot = build_hetero_graph_snapshot(
+        jobs=jobs,
+        active=active,
+        done=done,
+        op_ptr=op_ptr,
+        num_m=num_m,
+        phase="initial",
+    )
+
+    running_snapshot = None
     after_summary = None
     curve = []
     AT_changed_directly = False
@@ -222,17 +218,26 @@ def main() -> None:
         if at_before != machine_AT:
             AT_changed_directly = True
 
-        # Record graph statistics after concurrent disturbance appears.
+        # Record graph statistics after random arrival and urgent insertion both appear.
         if after_summary is None:
             arrived_random = all(j.job_id in active for j in random_arr)
             arrived_urgent = all(j.job_id in active for j in urgent_arr)
 
             if arrived_random and arrived_urgent:
                 tmp_summary, _ = compute_graph_summary(jobs, active, op_ptr, done, machine_busy)
+
                 if tmp_summary["legal actions"] > 0:
                     after_summary = tmp_summary
+                    running_snapshot = build_hetero_graph_snapshot(
+                        jobs=jobs,
+                        active=active,
+                        done=done,
+                        op_ptr=op_ptr,
+                        num_m=num_m,
+                        phase="running",
+                    )
 
-        summary, actions = compute_graph_summary(jobs, active, op_ptr, done, machine_busy)
+        _, actions = compute_graph_summary(jobs, active, op_ptr, done, machine_busy)
 
         if not actions:
             t += 1
@@ -275,6 +280,31 @@ def main() -> None:
 
     if after_summary is None:
         after_summary = before_summary
+
+    if running_snapshot is None:
+        running_snapshot = build_hetero_graph_snapshot(
+            jobs=jobs,
+            active=active,
+            done=done,
+            op_ptr=op_ptr,
+            num_m=num_m,
+            phase="running",
+        )
+
+    selected_edges = {
+        (jid, opi, mid)
+        for jid, opi, mid, start, end in schedule_records
+    }
+
+    finished_snapshot = build_hetero_graph_snapshot(
+        jobs=jobs,
+        active=active,
+        done=set(job_map.keys()),
+        op_ptr={j.job_id: j.num_ops for j in jobs},
+        num_m=num_m,
+        selected_edges=selected_edges,
+        phase="finished",
+    )
 
     makespan = max(completion.values())
     F_real = sum(
@@ -368,19 +398,17 @@ def main() -> None:
         curve if len(curve) >= 6 else [160, 142, 128, 110, 98, 92],
     )
 
-    plot_hetero_graph_before(
-        "results/hetero_graph_before.png",
-        jobs,
-        initial,
-        num_m,
-    )
+    try:
+        draw_hetero_graph(initial_snapshot, "results/hetero_graph_initial.png")
+        draw_hetero_graph(running_snapshot, "results/hetero_graph_running.png")
+        draw_hetero_graph(finished_snapshot, "results/hetero_graph_finished.png")
 
-    plot_hetero_graph_after(
-        "results/hetero_graph_after.png",
-        jobs,
-        schedule_records,
-        num_m,
-    )
+        # Compatibility aliases.
+        draw_hetero_graph(initial_snapshot, "results/hetero_graph_before.png")
+        draw_hetero_graph(finished_snapshot, "results/hetero_graph_after.png")
+    except Exception as e:
+        print(f"Heterogeneous graph plotting failed: {e}")
+        print("Please install matplotlib by running `pip install matplotlib`.")
 
     plot_gantt(
         "results/gantt_before.png",
@@ -391,7 +419,7 @@ def main() -> None:
 
     plot_gantt(
         "results/gantt_after.png",
-        "Gantt Chart After Scheduling",
+        "Small-scale concurrent disturbance scheduling Gantt chart",
         schedule_records,
         job_map,
     )

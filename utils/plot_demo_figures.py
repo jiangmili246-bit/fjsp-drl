@@ -49,6 +49,7 @@ def _job_label(job):
 def plot_hetero_graph_before(path, jobs, initial_jobs, num_m):
     """
     Plot heterogeneous graph before scheduling / before disturbance.
+
     Semantics:
     - Only initial jobs are shown.
     - J-O dashed edges point to the first active operation.
@@ -65,7 +66,6 @@ def plot_hetero_graph_before(path, jobs, initial_jobs, num_m):
         job_x = 0.08
         op_xs = [0.28, 0.40, 0.52]
         ys = [0.72, 0.52, 0.32]
-
         m_colors = ["red", "green", "dodgerblue"]
 
         # Machine nodes
@@ -191,14 +191,46 @@ def plot_hetero_graph_before(path, jobs, initial_jobs, num_m):
         )
 
         legend = [
-            Line2D([0], [0], marker="o", color="w", label="Job node",
-                   markerfacecolor="white", markeredgecolor="black", markersize=10),
-            Line2D([0], [0], marker="o", color="w", label="Active operation",
-                   markerfacecolor="#F9E79F", markeredgecolor="black", markersize=10),
-            Line2D([0], [0], marker="o", color="w", label="Non-active operation",
-                   markerfacecolor="white", markeredgecolor="black", markersize=10),
-            Line2D([0], [0], marker="o", color="w", label="Machine node",
-                   markerfacecolor="white", markeredgecolor="black", markersize=10),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Job node",
+                markerfacecolor="white",
+                markeredgecolor="black",
+                markersize=10,
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Active operation",
+                markerfacecolor="#F9E79F",
+                markeredgecolor="black",
+                markersize=10,
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Non-active operation",
+                markerfacecolor="white",
+                markeredgecolor="black",
+                markersize=10,
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Machine node",
+                markerfacecolor="white",
+                markeredgecolor="black",
+                markersize=10,
+            ),
             Line2D([0], [0], linestyle="-", color="black", label="Operation sequence"),
             Line2D([0], [0], linestyle="--", color="black", label="J-O active edge"),
             Line2D([0], [0], linestyle="--", color="red", label="O-M candidate M1"),
@@ -226,6 +258,7 @@ def plot_hetero_graph_before(path, jobs, initial_jobs, num_m):
 def plot_hetero_graph_after(path, jobs, schedule_records, num_m):
     """
     Plot heterogeneous graph after scheduling.
+
     Semantics:
     - All jobs are shown.
     - All operations are completed.
@@ -397,14 +430,46 @@ def plot_hetero_graph_after(path, jobs, schedule_records, num_m):
         )
 
         legend = [
-            Line2D([0], [0], marker="o", color="w", label="Initial job",
-                   markerfacecolor="white", markeredgecolor="black", markersize=10),
-            Line2D([0], [0], marker="o", color="w", label="Random arrival job",
-                   markerfacecolor="#EAF4FF", markeredgecolor="dodgerblue", markersize=10),
-            Line2D([0], [0], marker="o", color="w", label="Urgent insertion job",
-                   markerfacecolor="#FFF0F0", markeredgecolor="red", markersize=10),
-            Line2D([0], [0], marker="o", color="w", label="Completed operation",
-                   markerfacecolor="#E5E7E9", markeredgecolor="black", markersize=10),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Initial job",
+                markerfacecolor="white",
+                markeredgecolor="black",
+                markersize=10,
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Random arrival job",
+                markerfacecolor="#EAF4FF",
+                markeredgecolor="dodgerblue",
+                markersize=10,
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Urgent insertion job",
+                markerfacecolor="#FFF0F0",
+                markeredgecolor="red",
+                markersize=10,
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label="Completed operation",
+                markerfacecolor="#E5E7E9",
+                markeredgecolor="black",
+                markersize=10,
+            ),
             Line2D([0], [0], linestyle="-", color="black", label="Operation sequence / completion"),
             Line2D([0], [0], linestyle="-", color="red", label="Selected O-M from M1"),
             Line2D([0], [0], linestyle="-", color="green", label="Selected O-M from M2"),

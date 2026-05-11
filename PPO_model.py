@@ -237,37 +237,23 @@ class HGNNScheduler(nn.Module):
         else:
             h_opes_pooled = h_opes.mean(dim=-2)  # shape: [len(batch_idxes), out_size_ope]
 
-        # Detect eligible O-M pairs (eligible actions) and generate tensors for actor calculation
-        ope_step_batch = torch.where(state.ope_step_batch > state.end_ope_biases_batch,
-                                     state.end_ope_biases_batch, state.ope_step_batch)
-        jobs_gather = ope_step_batch[..., :, None].expand(-1, -1, h_opes.size(-1))[batch_idxes]
-        h_jobs = h_opes.gather(1, jobs_gather)
-        # Matrix indicating whether processing is possible
-        # shape: [len(batch_idxes), num_jobs, num_mas]
-        eligible_proc = state.ope_ma_adj_batch[batch_idxes].gather(1,
-                          ope_step_batch[..., :, None].expand(-1, -1, state.ope_ma_adj_batch.size(-1))[batch_idxes])
-        h_jobs_padding = h_jobs.unsqueeze(-2).expand(-1, -1, state.proc_times_batch.size(-1), -1)
-        h_mas_padding = h_mas.unsqueeze(-3).expand_as(h_jobs_padding)
-        h_mas_pooled_padding = h_mas_pooled[:, None, None, :].expand_as(h_jobs_padding)
-        h_opes_pooled_padding = h_opes_pooled[:, None, None, :].expand_as(h_jobs_padding)
-        # Matrix indicating whether machine is eligible
-        # shape: [len(batch_idxes), num_jobs, num_mas]
-        ma_eligible = ~state.mask_ma_procing_batch[batch_idxes].unsqueeze(1).expand_as(h_jobs_padding[..., 0])
-        # Matrix indicating whether job is eligible
-        # shape: [len(batch_idxes), num_jobs, num_mas]
-        job_eligible = ~(state.mask_job_procing_batch[batch_idxes] +
-                         state.mask_job_finish_batch[batch_idxes])[:, :, None].expand_as(h_jobs_padding[..., 0])
-        # shape: [len(batch_idxes), num_jobs, num_mas]
-        eligible = job_eligible & ma_eligible & (eligible_proc == 1)
+        # Legal actions over (operation, machine) pairs only
+        legal_mask = state.legal_action_mask_batch[batch_idxes]
+        h_opes_padding = h_opes.unsqueeze(-2).expand(-1, -1, state.proc_times_batch.size(-1), -1)
+        h_mas_padding = h_mas.unsqueeze(-3).expand_as(h_opes_padding)
+        h_mas_pooled_padding = h_mas_pooled[:, None, None, :].expand_as(h_opes_padding)
+        h_opes_pooled_padding = h_opes_pooled[:, None, None, :].expand_as(h_opes_padding)
+        h_actions = torch.cat((h_opes_padding, h_mas_padding, h_opes_pooled_padding, h_mas_pooled_padding),
+                              dim=-1).transpose(1, 2)
+        mask = legal_mask.transpose(1, 2).flatten(1)
+        eligible = legal_mask
         if (~(eligible)).all():
             print("No eligible O-M pair!")
             return
-        # Input of actor MLP
-        # shape: [len(batch_idxes), num_mas, num_jobs, out_size_ma*2+out_size_ope*2]
-        h_actions = torch.cat((h_jobs_padding, h_mas_padding, h_opes_pooled_padding, h_mas_pooled_padding),
-                              dim=-1).transpose(1, 2)
         h_pooled = torch.cat((h_opes_pooled, h_mas_pooled), dim=-1)  # deprecated
-        mask = eligible.transpose(1, 2).flatten(1)
+        ope_step_batch = torch.where(state.ope_step_batch > state.end_ope_biases_batch,
+                                     state.end_ope_biases_batch, state.ope_step_batch)
+        jobs_gather = ope_step_batch[..., :, None].expand(-1, -1, h_opes.size(-1))[batch_idxes]
 
         # Get priority index and probability of actions with masking the ineligible actions
         scores = self.actor(h_actions).flatten(1)
@@ -302,9 +288,15 @@ class HGNNScheduler(nn.Module):
             action_indexes = action_probs.argmax(dim=1)
 
         # Calculate the machine, job and operation index based on the action index
-        mas = (action_indexes / state.mask_job_finish_batch.size(1)).long()
-        jobs = (action_indexes % state.mask_job_finish_batch.size(1)).long()
-        opes = ope_step_batch[state.batch_idxes, jobs]
+        mas = (action_indexes / state.ope_ma_adj_batch.size(1)).long()
+        opes = (action_indexes % state.ope_ma_adj_batch.size(1)).long()
+        jobs = state.opes_appertain_batch[state.batch_idxes, opes]
+
+        if flag_train:
+            print("[DEBUG] ready operations:", torch.where(state.ready_opes_batch[state.batch_idxes])[1][:20])
+            print("[DEBUG] legal actions:", torch.where(state.legal_action_mask_batch[state.batch_idxes])[:2])
+            print("[DEBUG] action mask shape:", state.legal_action_mask_batch[state.batch_idxes].shape)
+            print("[DEBUG] selected action:", torch.stack((opes, mas), dim=1)[:5])
 
         # Store data in memory during training
         if flag_train == True:
